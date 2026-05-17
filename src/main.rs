@@ -51,6 +51,7 @@ struct Config {
     repo: PathBuf,
     output: Option<PathBuf>,
     repo_url: Option<String>,
+    self_url: Option<String>,
     title: Option<String>,
     description: Option<String>,
     max_items: Option<usize>,
@@ -99,6 +100,7 @@ impl Config {
             repo: PathBuf::from("."),
             output: None,
             repo_url: None,
+            self_url: None,
             title: None,
             description: None,
             max_items: None,
@@ -117,6 +119,7 @@ impl Config {
                     config.output = Some(PathBuf::from(take_value(&mut args, "--output")?))
                 }
                 "--repo-url" => config.repo_url = Some(take_value(&mut args, "--repo-url")?),
+                "--self-url" => config.self_url = Some(take_value(&mut args, "--self-url")?),
                 "--title" => config.title = Some(take_value(&mut args, "--title")?),
                 "--description" => {
                     config.description = Some(take_value(&mut args, "--description")?)
@@ -159,6 +162,7 @@ Options:
   --repo PATH            Git repository to inspect (default: current directory)
   --output PATH          RSS path to write (default: public/<repo-name>.rss)
   --repo-url URL         Public repository URL for item links (default: origin remote)
+  --self-url URL         Public URL of the generated RSS feed
   --title TEXT           RSS channel title
   --description TEXT     RSS channel description
   --max-items N          Keep only the newest N items
@@ -199,7 +203,13 @@ fn generate(config: Config) -> Result<PathBuf> {
     let channel_description = config
         .description
         .unwrap_or_else(|| format!("Newly added packages in the {repo_name} Gentoo overlay"));
-    let rss = render_rss(&channel_title, &repo_url, &channel_description, &items);
+    let rss = render_rss(
+        &channel_title,
+        &repo_url,
+        config.self_url.as_deref(),
+        &channel_description,
+        &items,
+    );
 
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
@@ -238,7 +248,7 @@ fn discover_repo_url(repo: &Path) -> Result<String> {
 
 fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
     let format = format!(
-        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%ae (%an){UNIT_SEPARATOR}%s"
+        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%ae{UNIT_SEPARATOR}%an{UNIT_SEPARATOR}%s"
     );
     let log = git_output(
         repo,
@@ -267,8 +277,10 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
         let commit = header_fields.next().unwrap_or_default();
         let parents = header_fields.next().unwrap_or_default();
         let date_rfc2822 = header_fields.next().unwrap_or_default();
-        let author = header_fields.next().unwrap_or_default();
+        let author_email = header_fields.next().unwrap_or_default();
+        let author_name = header_fields.next().unwrap_or_default();
         let subject = header_fields.next().unwrap_or_default();
+        let author = rss_author(author_email, author_name).unwrap_or_default();
 
         let has_parent = parents.split_whitespace().next().is_some();
         if !has_parent && !config.include_root {
@@ -296,7 +308,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 package: package.to_string(),
                 commit: commit.to_string(),
                 commit_subject: subject.to_string(),
-                author: author.to_string(),
+                author: author.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
                 homepage: vars.homepage.unwrap_or_default(),
@@ -384,6 +396,32 @@ fn is_valid_http_url(value: &str) -> bool {
         })
 }
 
+fn rss_author(email: &str, name: &str) -> Option<String> {
+    is_valid_email(email).then(|| {
+        if name.trim().is_empty() {
+            email.to_string()
+        } else {
+            format!("{email} ({})", name.trim())
+        }
+    })
+}
+
+fn is_valid_email(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && value.chars().all(|ch| {
+            ch.is_ascii()
+                && !ch.is_ascii_control()
+                && !ch.is_ascii_whitespace()
+                && !matches!(ch, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']')
+        })
+}
+
 fn assignment_value(input: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     let mut lines = input.lines();
@@ -445,18 +483,27 @@ fn collapse_space(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn render_rss(title: &str, repo_url: &str, description: &str, items: &[PackageItem]) -> String {
+fn render_rss(
+    title: &str,
+    repo_url: &str,
+    self_url: Option<&str>,
+    description: &str,
+    items: &[PackageItem],
+) -> String {
     let build_date = items
         .first()
         .map(|item| item.date_rfc2822.clone())
         .unwrap_or_else(current_rfc2822_utc);
     let mut rss = String::new();
     rss.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    rss.push_str("<rss version=\"2.0\">\n");
+    rss.push_str("<rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">\n");
     rss.push_str("  <channel>\n");
     push_tag(&mut rss, 4, "title", title);
     push_tag(&mut rss, 4, "link", repo_url);
     push_tag(&mut rss, 4, "description", description);
+    if let Some(self_url) = self_url.filter(|url| is_valid_http_url(url)) {
+        push_atom_self_link(&mut rss, self_url);
+    }
     push_tag(&mut rss, 4, "lastBuildDate", &build_date);
     push_tag(&mut rss, 4, "generator", BIN_NAME);
     push_tag(&mut rss, 4, "ttl", "1440");
@@ -476,7 +523,9 @@ fn render_rss(title: &str, repo_url: &str, description: &str, items: &[PackageIt
         push_tag(&mut rss, 6, "link", link);
         push_cdata_tag(&mut rss, 6, "description", &html_description);
         push_tag(&mut rss, 6, "pubDate", &item.date_rfc2822);
-        push_tag(&mut rss, 6, "author", &item.author);
+        if !item.author.is_empty() {
+            push_tag(&mut rss, 6, "author", &item.author);
+        }
         push_guid(&mut rss, &format!("{}:{}", item.commit, item.package));
         rss.push_str("    </item>\n");
     }
@@ -543,6 +592,12 @@ fn push_guid(rss: &mut String, value: &str) {
     rss.push_str("      <guid isPermaLink=\"false\">");
     rss.push_str(&xml_escape(value));
     rss.push_str("</guid>\n");
+}
+
+fn push_atom_self_link(rss: &mut String, value: &str) {
+    rss.push_str("    <atom:link href=\"");
+    rss.push_str(&xml_escape(value));
+    rss.push_str("\" rel=\"self\" type=\"application/rss+xml\"/>\n");
 }
 
 fn xml_escape(input: &str) -> String {
@@ -778,6 +833,7 @@ LICENSE="Apache-2.0"
             repo: repo.path.clone(),
             output: Some(output.clone()),
             repo_url: Some("git@github.com:example/overlay.git".to_string()),
+            self_url: Some("https://example.github.io/overlay/feed.rss".to_string()),
             title: None,
             description: None,
             max_items: None,

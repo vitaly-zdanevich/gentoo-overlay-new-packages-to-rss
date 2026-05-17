@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GENERATOR_VERSION: v0.1.6
+  GENERATOR_VERSION: v0.1.7
   GENERATOR_BINARY: gentoo-overlay-new-packages-to-rss-linux-x86_64
 
 jobs:
@@ -43,9 +43,11 @@ jobs:
       - name: Generate RSS
         run: |
           repo="${GITHUB_REPOSITORY#*/}"
+          owner="${GITHUB_REPOSITORY%/*}"
           ./${GENERATOR_BINARY} \
             --repo . \
             --repo-url "https://github.com/${{ github.repository }}" \
+            --self-url "https://${owner}.github.io/${repo}/${repo}.rss" \
             --output "public/${repo}.rss"
           printf '%s\n' \
             '<!doctype html>' \
