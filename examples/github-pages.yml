@@ -15,6 +15,10 @@ concurrency:
   group: github-pages
   cancel-in-progress: true
 
+env:
+  GENERATOR_VERSION: v0.1.0
+  GENERATOR_TARGET: x86_64-unknown-linux-gnu
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-24.04
@@ -28,18 +32,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout RSS generator
-        uses: actions/checkout@v6
-        with:
-          repository: vitaly-zdanevich/gentoo-overlay-new-packages-to-rss
-          path: generator
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download RSS generator
+        run: |
+          archive="gentoo-overlay-new-packages-to-rss-${GENERATOR_TARGET}.tar.gz"
+          base="https://github.com/vitaly-zdanevich/gentoo-overlay-new-packages-to-rss/releases/download/${GENERATOR_VERSION}"
+          curl -fsSLO "${base}/${archive}"
+          curl -fsSLO "${base}/${archive}.sha256"
+          sha256sum -c "${archive}.sha256"
+          tar -xzf "${archive}"
+          chmod +x gentoo-overlay-new-packages-to-rss
 
       - name: Generate RSS
         run: |
-          cargo run --release --manifest-path generator/Cargo.toml -- \
+          ./gentoo-overlay-new-packages-to-rss \
             --repo . \
             --repo-url "https://github.com/${{ github.repository }}" \
             --output "public/${GITHUB_REPOSITORY#*/}.rss"

@@ -48,8 +48,8 @@ source of new package events. Most overlays should leave it disabled.
 ## GitHub Pages
 
 `examples/github-pages.yml` is a workflow for overlay repositories. It checks
-out full git history, builds this generator, writes `public/<repo>.rss`, and
-publishes the directory through GitHub Pages.
+out full git history, downloads the generator release binary, writes
+`public/<repo>.rss`, and publishes the directory through GitHub Pages.
 
 For `microcai/gentoo-zh`, the generated feed path is:
 
@@ -66,3 +66,19 @@ cargo run -- --repo /path/to/overlay --output /tmp/feed.rss
 ```
 
 The binary has no Rust crate dependencies. It requires `git` at runtime.
+
+## Releases
+
+Push a version tag to publish the Linux binary:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow uploads:
+
+```text
+gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz
+gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
