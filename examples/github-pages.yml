@@ -42,15 +42,21 @@ jobs:
 
       - name: Generate RSS
         run: |
+          repo="${GITHUB_REPOSITORY#*/}"
           ./${GENERATOR_BINARY} \
             --repo . \
             --repo-url "https://github.com/${{ github.repository }}" \
-            --output "public/${GITHUB_REPOSITORY#*/}.rss"
+            --output "public/${repo}.rss"
+          printf '%s\n' \
+            '<!doctype html>' \
+            '<meta charset="utf-8">' \
+            "<title>${repo} new packages RSS</title>" \
+            "<a href=\"./${repo}.rss\">${repo}.rss</a>" \
+            > public/index.html
+          touch public/.nojekyll
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
