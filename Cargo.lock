@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "gentoo-overlay-new-packages-to-rss"
-version = "0.1.0"
+version = "0.1.1"

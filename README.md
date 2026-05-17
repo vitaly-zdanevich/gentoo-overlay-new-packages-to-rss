@@ -72,8 +72,8 @@ The binary has no Rust crate dependencies. It requires `git` at runtime.
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The release workflow uploads:

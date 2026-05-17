@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GENERATOR_VERSION: v0.1.0
+  GENERATOR_VERSION: v0.1.1
   GENERATOR_TARGET: x86_64-unknown-linux-gnu
 
 jobs:
