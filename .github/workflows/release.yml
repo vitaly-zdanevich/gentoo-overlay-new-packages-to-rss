@@ -13,25 +13,40 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       BIN: gentoo-overlay-new-packages-to-rss
-      TARGET: x86_64-unknown-linux-gnu
+      TARGET_X86_64: x86_64-unknown-linux-gnu
+      TARGET_ARM64: aarch64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - name: Install ARM64 linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
 
       - name: Test
         run: cargo test --locked
 
-      - name: Build
-        run: cargo build --release --locked --target "$TARGET"
+      - name: Build x86_64
+        run: cargo build --release --locked --target "$TARGET_X86_64"
+
+      - name: Build ARM64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --locked --target "$TARGET_ARM64"
 
       - name: Package
         run: |
           mkdir -p dist
-          cp "target/$TARGET/release/$BIN" "dist/$BIN-$TARGET"
+          cp "target/$TARGET_X86_64/release/$BIN" "dist/$BIN-linux-x86_64"
+          cp "target/$TARGET_ARM64/release/$BIN" "dist/$BIN-linux-arm64"
           cd dist
-          sha256sum "$BIN-$TARGET" | tee "$BIN-$TARGET.sha256"
+          sha256sum "$BIN-linux-x86_64" | tee "$BIN-linux-x86_64.sha256"
+          sha256sum "$BIN-linux-arm64" | tee "$BIN-linux-arm64.sha256"
 
       - name: Create GitHub release
         env:
@@ -41,4 +56,4 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes
-          gh release upload "$GITHUB_REF_NAME" "dist/$BIN-$TARGET" "dist/$BIN-$TARGET.sha256" --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
