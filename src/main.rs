@@ -238,7 +238,7 @@ fn discover_repo_url(repo: &Path) -> Result<String> {
 
 fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
     let format = format!(
-        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%an <%ae>{UNIT_SEPARATOR}%s"
+        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%ae (%an){UNIT_SEPARATOR}%s"
     );
     let log = git_output(
         repo,
@@ -363,12 +363,25 @@ impl EbuildVars {
             homepage: assignment_value(input, "HOMEPAGE").and_then(|value| {
                 value
                     .split_whitespace()
-                    .find(|part| part.starts_with("http://") || part.starts_with("https://"))
+                    .find(|part| is_valid_http_url(part))
                     .map(str::to_string)
             }),
             license: assignment_value(input, "LICENSE"),
         }
     }
+}
+
+fn is_valid_http_url(value: &str) -> bool {
+    (value.starts_with("http://") || value.starts_with("https://"))
+        && value.chars().all(|ch| {
+            ch.is_ascii()
+                && !ch.is_ascii_control()
+                && !ch.is_ascii_whitespace()
+                && !matches!(
+                    ch,
+                    '<' | '>' | '"' | '\'' | '{' | '}' | '|' | '\\' | '^' | '`'
+                )
+        })
 }
 
 fn assignment_value(input: &str, key: &str) -> Option<String> {
@@ -659,6 +672,22 @@ LICENSE='Apache-2.0 MIT'
                 homepage: Some("https://example.com/project".to_string()),
                 license: Some("Apache-2.0 MIT".to_string()),
             }
+        );
+    }
+
+    #[test]
+    fn ignores_invalid_homepage_urls() {
+        let vars = EbuildVars::from_ebuild(
+            r#"
+DESCRIPTION="Package"
+HOMEPAGE="https://github.com/majn/${PN} https://example.com/project"
+LICENSE="MIT"
+"#,
+        );
+
+        assert_eq!(
+            vars.homepage,
+            Some("https://example.com/project".to_string())
         );
     }
 
