@@ -28,11 +28,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p dist/package
-          cp "target/$TARGET/release/$BIN" "dist/package/$BIN"
-          tar -C dist/package -czf "dist/$BIN-$TARGET.tar.gz" "$BIN"
+          mkdir -p dist
+          cp "target/$TARGET/release/$BIN" "dist/$BIN-$TARGET"
           cd dist
-          sha256sum "$BIN-$TARGET.tar.gz" | tee "$BIN-$TARGET.tar.gz.sha256"
+          sha256sum "$BIN-$TARGET" | tee "$BIN-$TARGET.sha256"
 
       - name: Create GitHub release
         env:
@@ -42,4 +41,4 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes
-          gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 --clobber
+          gh release upload "$GITHUB_REF_NAME" "dist/$BIN-$TARGET" "dist/$BIN-$TARGET.sha256" --clobber

@@ -72,15 +72,15 @@ The binary has no Rust crate dependencies. It requires `git` at runtime.
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 The release workflow uploads:
 
 ```text
-gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz
-gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz.sha256
+gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu
+gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.sha256
 ```
 
 This is LLM (gpt-5.5 xhigh) rewrite of my Go project https://gitlab.com/vitaly-zdanevich/gentoo-guru-new-packages-to-rss

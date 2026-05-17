@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GENERATOR_VERSION: v0.1.2
+  GENERATOR_VERSION: v0.1.3
   GENERATOR_TARGET: x86_64-unknown-linux-gnu
 
 jobs:
@@ -34,17 +34,16 @@ jobs:
 
       - name: Download RSS generator
         run: |
-          archive="gentoo-overlay-new-packages-to-rss-${GENERATOR_TARGET}.tar.gz"
+          binary="gentoo-overlay-new-packages-to-rss-${GENERATOR_TARGET}"
           base="https://github.com/vitaly-zdanevich/gentoo-overlay-new-packages-to-rss/releases/download/${GENERATOR_VERSION}"
-          curl -fsSLO "${base}/${archive}"
-          curl -fsSLO "${base}/${archive}.sha256"
-          sha256sum -c "${archive}.sha256"
-          tar -xzf "${archive}"
-          chmod +x gentoo-overlay-new-packages-to-rss
+          curl -fsSLO "${base}/${binary}"
+          curl -fsSLO "${base}/${binary}.sha256"
+          sha256sum -c "${binary}.sha256"
+          chmod +x "${binary}"
 
       - name: Generate RSS
         run: |
-          ./gentoo-overlay-new-packages-to-rss \
+          ./gentoo-overlay-new-packages-to-rss-${GENERATOR_TARGET} \
             --repo . \
             --repo-url "https://github.com/${{ github.repository }}" \
             --output "public/${GITHUB_REPOSITORY#*/}.rss"
