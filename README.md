@@ -82,3 +82,5 @@ The release workflow uploads:
 gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz
 gentoo-overlay-new-packages-to-rss-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
+
+This is LLM (gpt-5.5 xhigh) rewrite of my Go project https://gitlab.com/vitaly-zdanevich/gentoo-guru-new-packages-to-rss
