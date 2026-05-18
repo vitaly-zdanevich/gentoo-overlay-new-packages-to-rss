@@ -58,6 +58,7 @@ struct Config {
     description: Option<String>,
     max_items: Option<usize>,
     include_root: bool,
+    list_patches: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -75,6 +76,7 @@ struct PackageItem {
     homepage: String,
     license: String,
     ebuild_path: String,
+    patches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -117,6 +119,7 @@ impl Config {
             description: None,
             max_items: None,
             include_root: false,
+            list_patches: false,
         };
 
         let mut args = args.into_iter().map(Into::into).peekable();
@@ -145,6 +148,7 @@ impl Config {
                     })?);
                 }
                 "--include-root" => config.include_root = true,
+                "--list-patches" => config.list_patches = true,
                 unknown => return Err(Error::Args(format!("unknown argument: {unknown}"))),
             }
         }
@@ -179,6 +183,7 @@ Options:
   --description TEXT     RSS channel description
   --max-items N          Keep only the newest N items
   --include-root         Include package metadata added by the root commit
+  --list-patches         Include package files/*.patch and files/*.diff names
   -h, --help             Show this help
 "
     );
@@ -314,6 +319,11 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
             let vars = EbuildVars::from_ebuild(&ebuild);
             let metadata = git_output(repo, ["show", &format!("{commit}:{path}")])?;
             let package_metadata = package_metadata(&metadata);
+            let patches = if config.list_patches {
+                package_patch_names(repo, commit, package)?
+            } else {
+                Vec::new()
+            };
 
             items.push(PackageItem {
                 package: package.to_string(),
@@ -329,6 +339,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 homepage: vars.homepage.unwrap_or_default(),
                 license: vars.license.unwrap_or_default(),
                 ebuild_path,
+                patches,
             });
         }
     }
@@ -409,6 +420,42 @@ fn select_ebuild(repo: &Path, commit: &str, package: &str) -> Result<Option<Stri
         .find(|path| !path.ends_with("-9999.ebuild"))
         .or_else(|| ebuilds.last())
         .cloned())
+}
+
+fn package_patch_names(repo: &Path, commit: &str, package: &str) -> Result<Vec<String>> {
+    let files_dir = format!("{package}/files");
+    let tree = git_output(
+        repo,
+        ["ls-tree", "-r", "--name-only", commit, "--", &files_dir],
+    )?;
+    let prefix = format!("{files_dir}/");
+    let mut patches: Vec<_> = tree
+        .lines()
+        .filter(|path| is_patch_path(path))
+        .filter_map(|path| path.strip_prefix(&prefix))
+        .map(str::to_string)
+        .collect();
+    patches.sort();
+    Ok(patches)
+}
+
+fn is_patch_path(path: &str) -> bool {
+    let Some(name) = path.rsplit('/').next() else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    [
+        ".patch",
+        ".diff",
+        ".patch.gz",
+        ".diff.gz",
+        ".patch.bz2",
+        ".diff.bz2",
+        ".patch.xz",
+        ".diff.xz",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -872,6 +919,9 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         xml_escape(&item.package)
     ));
     parts.push(format!("Ebuild: {}", xml_escape(&item.ebuild_path)));
+    if !item.patches.is_empty() {
+        parts.push(format!("Patches: {}", patch_names_html(&item.patches)));
+    }
     if !item.homepage.is_empty() {
         parts.push(format!(
             "Homepage: <a href=\"{}\">{}</a>",
@@ -883,6 +933,14 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
     parts.join("<br/>\n")
+}
+
+fn patch_names_html(patches: &[String]) -> String {
+    patches
+        .iter()
+        .map(|patch| format!("<code>{}</code>", xml_escape(patch)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn use_flags_html(flags: &[UseFlagDescription]) -> String {
@@ -1272,6 +1330,12 @@ HOMEPAGE="https://new.example/path?x=1&y=2"
 LICENSE="Apache-2.0"
 "#,
         );
+        repo.write("dev-util/newpkg/files/fix-build.patch", "patch content\n");
+        repo.write(
+            "dev-util/newpkg/files/subdir/fix-runtime.diff",
+            "diff content\n",
+        );
+        repo.write("dev-util/newpkg/files/readme.txt", "not a patch\n");
         repo.commit_with_body(
             "dev-util/newpkg: new package",
             "Useful <details> & context\n\nSecond paragraph",
@@ -1288,6 +1352,7 @@ LICENSE="Apache-2.0"
             description: None,
             max_items: None,
             include_root: false,
+            list_patches: false,
         })
         .expect("RSS generated");
 
@@ -1312,12 +1377,32 @@ LICENSE="Apache-2.0"
         assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">test-user</a>"));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
+        assert!(!rss.contains("Patches:"));
         assert!(!rss.contains("Package directory"));
         assert!(!rss.contains(">Commit</a>"));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));
         assert!(!rss.contains("app-root/rootpkg: add 2"));
+
+        let output = repo.path.join("public/feed-with-patches.rss");
+        generate(Config {
+            repo: repo.path.clone(),
+            output: Some(output.clone()),
+            repo_url: Some("git@github.com:example/overlay.git".to_string()),
+            self_url: Some("https://example.github.io/overlay/feed-with-patches.rss".to_string()),
+            title: None,
+            description: None,
+            max_items: None,
+            include_root: false,
+            list_patches: true,
+        })
+        .expect("RSS generated with patch names");
+        let rss = fs::read_to_string(output).expect("RSS can be read");
+        assert!(rss.contains(
+            "Patches: <code>fix-build.patch</code>, <code>subdir/fix-runtime.diff</code>"
+        ));
+        assert!(!rss.contains("readme.txt"));
     }
 
     struct TestRepo {

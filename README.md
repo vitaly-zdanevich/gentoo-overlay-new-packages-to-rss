@@ -42,6 +42,9 @@ gentoo-overlay-new-packages-to-rss \
   --max-items 200
 ```
 
+Add `--list-patches` to include patch filenames from each package's `files/`
+directory when `.patch` or `.diff` files exist.
+
 Use `--include-root` only if the repository root commit should be treated as a
 source of new package events. Most overlays should leave it disabled.
 
