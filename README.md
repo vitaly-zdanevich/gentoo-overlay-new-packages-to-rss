@@ -47,9 +47,14 @@ source of new package events. Most overlays should leave it disabled.
 
 ## GitHub Pages
 
-`examples/github-pages.yml` is a workflow for overlay repositories. It checks
-out full git history, downloads the generator release binary, writes
+`examples/github-pages.yml` is a ready-to-use workflow for overlay repositories:
+copy it to `.github/workflows/new-packages-rss.yml` without editing it. It
+checks out full git history, downloads the generator release binary, writes
 `public/<repo>.rss`, and publishes the directory through GitHub Pages.
+
+On normal pushes, the example runs only when the pushed commits add a
+`category/package/metadata.xml` file. Manual `workflow_dispatch` runs still
+regenerate the full feed.
 
 For `microcai/gentoo-zh`, the generated feed path is:
 
@@ -79,8 +84,8 @@ The binary includes its Rust dependencies at build time. It requires `git` at ru
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.10
-git push origin v0.1.10
+git tag v0.1.11
+git push origin v0.1.11
 ```
 
 The release workflow uploads:
