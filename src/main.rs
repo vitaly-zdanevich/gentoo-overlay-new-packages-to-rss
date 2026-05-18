@@ -60,6 +60,7 @@ struct Config {
     include_root: bool,
     list_patches: bool,
     github_author_links: bool,
+    show_author_email: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -131,6 +132,7 @@ impl Config {
             include_root: false,
             list_patches: false,
             github_author_links: false,
+            show_author_email: true,
         };
 
         let mut args = args.into_iter().map(Into::into).peekable();
@@ -161,6 +163,7 @@ impl Config {
                 "--include-root" => config.include_root = true,
                 "--list-patches" => config.list_patches = true,
                 "--github-author-links" => config.github_author_links = true,
+                "--no-author-email" => config.show_author_email = false,
                 unknown => return Err(Error::Args(format!("unknown argument: {unknown}"))),
             }
         }
@@ -197,6 +200,7 @@ Options:
   --include-root         Include package metadata added by the root commit
   --list-patches         Include package files/*.patch and files/*.diff names
   --github-author-links  Use GitHub API to link non-noreply author emails
+  --no-author-email      Do not include author emails in item descriptions
   -h, --help             Show this help
 "
     );
@@ -240,6 +244,7 @@ fn generate(config: Config) -> Result<PathBuf> {
         config.self_url.as_deref(),
         &channel_description,
         &items,
+        config.show_author_email,
     );
 
     if let Some(parent) = output.parent() {
@@ -1149,6 +1154,7 @@ fn render_rss(
     self_url: Option<&str>,
     description: &str,
     items: &[PackageItem],
+    show_author_email: bool,
 ) -> String {
     let build_date = items
         .first()
@@ -1176,7 +1182,7 @@ fn render_rss(
         } else {
             item.homepage.as_str()
         };
-        let html_description = item_description(item, &package_url, &commit_url);
+        let html_description = item_description(item, &package_url, &commit_url, show_author_email);
 
         rss.push_str("    <item>\n");
         push_tag(&mut rss, 6, "title", &item.package);
@@ -1195,7 +1201,12 @@ fn render_rss(
     rss
 }
 
-fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> String {
+fn item_description(
+    item: &PackageItem,
+    package_url: &str,
+    commit_url: &str,
+    show_author_email: bool,
+) -> String {
     let mut parts = Vec::new();
     if !item.description.is_empty() {
         parts.push(format!(
@@ -1229,18 +1240,8 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
             html_text_with_breaks(&item.commit_body)
         ));
     }
-    if !item.author_github_username.is_empty() {
-        let profile_url = format!("https://github.com/{}", item.author_github_username);
-        let author_label = if item.author_name.is_empty() {
-            item.author_github_username.as_str()
-        } else {
-            item.author_name.as_str()
-        };
-        parts.push(format!(
-            "Author: <a href=\"{}\">{}</a>",
-            xml_escape(&profile_url),
-            xml_escape(author_label)
-        ));
+    if let Some(author) = author_html(item, show_author_email) {
+        parts.push(format!("Author: {author}"));
     }
     parts.push(format!(
         "Package: <a href=\"{}\">{}</a>",
@@ -1266,6 +1267,35 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
     parts.join("<br/>\n")
+}
+
+fn author_html(item: &PackageItem, show_author_email: bool) -> Option<String> {
+    let author_label = if item.author_name.is_empty() {
+        item.author_github_username.as_str()
+    } else {
+        item.author_name.as_str()
+    };
+    let mut author = if !item.author_github_username.is_empty() {
+        let profile_url = format!("https://github.com/{}", item.author_github_username);
+        format!(
+            "<a href=\"{}\">{}</a>",
+            xml_escape(&profile_url),
+            xml_escape(author_label)
+        )
+    } else if show_author_email && !item.author_name.is_empty() {
+        xml_escape(&item.author_name)
+    } else {
+        String::new()
+    };
+
+    if show_author_email && !item.author_email.is_empty() {
+        if !author.is_empty() {
+            author.push(' ');
+        }
+        author.push_str(&format!("&lt;{}&gt;", xml_escape(&item.author_email)));
+    }
+
+    (!author.is_empty()).then_some(author)
 }
 
 fn patch_names_html(patches: &[String]) -> String {
@@ -1776,6 +1806,7 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
             include_root: false,
             list_patches: false,
             github_author_links: false,
+            show_author_email: true,
         })
         .expect("RSS generated");
 
@@ -1799,7 +1830,9 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
         assert!(rss.contains(
             "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
-        assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">Test User</a>"));
+        assert!(rss.contains(
+            "Author: <a href=\"https://github.com/test-user\">Test User</a> &lt;123456+test-user@users.noreply.github.com&gt;"
+        ));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
         assert!(rss.contains(
@@ -1825,12 +1858,15 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
             include_root: false,
             list_patches: true,
             github_author_links: false,
+            show_author_email: false,
         })
         .expect("RSS generated with patch names");
         let rss = fs::read_to_string(output).expect("RSS can be read");
         assert!(rss.contains(
             "Patches: <code>fix-build.patch</code>, <code>subdir/fix-runtime.diff</code>"
         ));
+        assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">Test User</a>"));
+        assert!(!rss.contains("123456+test-user@users.noreply.github.com&gt;"));
         assert!(!rss.contains("readme.txt"));
     }
 

@@ -53,6 +53,10 @@ the git author email is not a GitHub noreply address. Set `GITHUB_TOKEN` or
 `GH_TOKEN` to avoid GitHub's low anonymous API rate limit. This optional mode
 requires `curl` at runtime.
 
+Author emails are included in item descriptions by default, because some RSS
+readers hide the email from the RSS author field. Add `--no-author-email` if
+your reader already shows author emails and you want to avoid duplication.
+
 Use `--include-root` only if the repository root commit should be treated as a
 source of new package events. Most overlays should leave it disabled.
 
