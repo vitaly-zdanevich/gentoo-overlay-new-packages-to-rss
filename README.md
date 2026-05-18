@@ -65,6 +65,13 @@ cargo test
 cargo run -- --repo /path/to/overlay --output /tmp/feed.rss
 ```
 
+There is also an ignored integration test for a real overlay checkout:
+
+```sh
+cargo test --test real_overlay -- --ignored
+GENTOO_OVERLAY_RSS_REAL_REPO=/path/to/overlay cargo test --test real_overlay -- --ignored
+```
+
 The binary includes its Rust dependencies at build time. It requires `git` at runtime.
 
 ## Releases
@@ -72,8 +79,8 @@ The binary includes its Rust dependencies at build time. It requires `git` at ru
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.8
-git push origin v0.1.8
+git tag v0.1.9
+git push origin v0.1.9
 ```
 
 The release workflow uploads:

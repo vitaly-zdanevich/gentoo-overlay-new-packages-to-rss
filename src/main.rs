@@ -699,6 +699,9 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         ));
     }
     if !item.commit_subject.is_empty() {
+        if !parts.is_empty() {
+            parts.push(String::new());
+        }
         parts.push(format!(
             "Commit title: {}",
             xml_escape(&item.commit_subject)
@@ -1060,6 +1063,9 @@ LICENSE="Apache-2.0"
         assert!(rss.contains("dev-util/newpkg: new package"));
         assert!(rss.contains("Useful &amp; fast"));
         assert!(rss.contains("Metadata description: Metadata &amp; package details"));
+        assert!(rss.contains(
+            "Metadata description: Metadata &amp; package details<br/>\n<br/>\nCommit title:"
+        ));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));

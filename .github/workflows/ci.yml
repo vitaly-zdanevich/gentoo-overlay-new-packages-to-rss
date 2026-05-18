@@ -15,3 +15,16 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --locked
+
+  real-overlay:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Clone gentoo-zh
+        run: git clone https://github.com/microcai/gentoo-zh /tmp/gentoo-zh
+
+      - name: Run real overlay smoke test
+        run: GENTOO_OVERLAY_RSS_REAL_REPO=/tmp/gentoo-zh cargo test --locked --test real_overlay -- --ignored
