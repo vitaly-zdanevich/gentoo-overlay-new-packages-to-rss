@@ -690,11 +690,14 @@ fn render_rss(
 fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> String {
     let mut parts = Vec::new();
     if !item.description.is_empty() {
-        parts.push(xml_escape(&item.description));
+        parts.push(format!(
+            "<strong>{}</strong>",
+            xml_escape(&item.description)
+        ));
     }
     if !item.metadata_description.is_empty() && item.metadata_description != item.description {
         parts.push(format!(
-            "Metadata description: {}",
+            "Metadata description: <strong>{}</strong>",
             xml_escape(&item.metadata_description)
         ));
     }
@@ -1061,10 +1064,12 @@ LICENSE="Apache-2.0"
         let rss = fs::read_to_string(output).expect("RSS can be read");
         assert!(rss.contains("<title>test-overlay: new Gentoo packages</title>"));
         assert!(rss.contains("dev-util/newpkg: new package"));
-        assert!(rss.contains("Useful &amp; fast"));
-        assert!(rss.contains("Metadata description: Metadata &amp; package details"));
+        assert!(rss.contains("<strong>Useful &amp; fast</strong>"));
+        assert!(
+            rss.contains("Metadata description: <strong>Metadata &amp; package details</strong>")
+        );
         assert!(rss.contains(
-            "Metadata description: Metadata &amp; package details<br/>\n<br/>\nCommit title:"
+            "Metadata description: <strong>Metadata &amp; package details</strong><br/>\n<br/>\nCommit title:"
         ));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
