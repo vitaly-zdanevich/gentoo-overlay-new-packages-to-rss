@@ -887,7 +887,8 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         ));
     }
     if !item.use_flags.is_empty() {
-        parts.push(format!("USE flags: {}", use_flags_html(&item.use_flags)));
+        parts.push("USE flags:".to_string());
+        parts.extend(item.use_flags.iter().map(use_flag_html));
     }
     if (!item.commit_subject.is_empty() || !item.commit_body.is_empty()) && !parts.is_empty() {
         parts.push(String::new());
@@ -943,18 +944,12 @@ fn patch_names_html(patches: &[String]) -> String {
         .join(", ")
 }
 
-fn use_flags_html(flags: &[UseFlagDescription]) -> String {
-    flags
-        .iter()
-        .map(|flag| {
-            format!(
-                "<code>{}</code>: {}",
-                xml_escape(&flag.name),
-                xml_escape(&flag.description)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("<br/>\n")
+fn use_flag_html(flag: &UseFlagDescription) -> String {
+    format!(
+        "<code>{}</code>: {}",
+        xml_escape(&flag.name),
+        xml_escape(&flag.description)
+    )
 }
 
 fn html_text_with_breaks(input: &str) -> String {
@@ -1364,7 +1359,9 @@ LICENSE="Apache-2.0"
         assert!(
             rss.contains("Metadata description: <strong>Metadata &amp; package details</strong>")
         );
-        assert!(rss.contains("USE flags: <code>qt6</code>: Use dev-qt/qtbase &amp; bindings"));
+        assert!(
+            rss.contains("USE flags:<br/>\n<code>qt6</code>: Use dev-qt/qtbase &amp; bindings")
+        );
         assert!(rss.contains("<code>webengine</code>: Enable web login"));
         assert!(
             rss.contains("<code>webengine</code>: Enable web login<br/>\n<br/>\nCommit title:")
