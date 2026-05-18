@@ -1,6 +1,6 @@
 [package]
 name = "gentoo-overlay-new-packages-to-rss"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "Generate RSS feeds for newly added packages in Gentoo overlay git repositories"
 license = "MIT"

@@ -946,7 +946,7 @@ fn patch_names_html(patches: &[String]) -> String {
 
 fn use_flag_html(flag: &UseFlagDescription) -> String {
     format!(
-        "<code>{}</code>: {}",
+        "<strong>{}</strong>: {}",
         xml_escape(&flag.name),
         xml_escape(&flag.description)
     )
@@ -1360,11 +1360,11 @@ LICENSE="Apache-2.0"
             rss.contains("Metadata description: <strong>Metadata &amp; package details</strong>")
         );
         assert!(
-            rss.contains("USE flags:<br/>\n<code>qt6</code>: Use dev-qt/qtbase &amp; bindings")
+            rss.contains("USE flags:<br/>\n<strong>qt6</strong>: Use dev-qt/qtbase &amp; bindings")
         );
-        assert!(rss.contains("<code>webengine</code>: Enable web login"));
+        assert!(rss.contains("<strong>webengine</strong>: Enable web login"));
         assert!(
-            rss.contains("<code>webengine</code>: Enable web login<br/>\n<br/>\nCommit title:")
+            rss.contains("<strong>webengine</strong>: Enable web login<br/>\n<br/>\nCommit title:")
         );
         assert!(rss.contains("Commit title: <a href=\"https://github.com/example/overlay/commit/"));
         assert!(rss.contains("\">dev-util/newpkg: new package</a>"));
