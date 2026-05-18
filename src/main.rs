@@ -70,9 +70,16 @@ struct PackageItem {
     date_rfc2822: String,
     description: String,
     metadata_description: String,
+    use_flags: Vec<UseFlagDescription>,
     homepage: String,
     license: String,
     ebuild_path: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct UseFlagDescription {
+    name: String,
+    description: String,
 }
 
 fn main() -> ExitCode {
@@ -303,7 +310,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
             let ebuild = git_output(repo, ["show", &format!("{commit}:{ebuild_path}")])?;
             let vars = EbuildVars::from_ebuild(&ebuild);
             let metadata = git_output(repo, ["show", &format!("{commit}:{path}")])?;
-            let metadata_description = metadata_description(&metadata).unwrap_or_default();
+            let package_metadata = package_metadata(&metadata);
 
             items.push(PackageItem {
                 package: package.to_string(),
@@ -313,7 +320,8 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 author: author.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
-                metadata_description,
+                metadata_description: package_metadata.description.unwrap_or_default(),
+                use_flags: package_metadata.use_flags,
                 homepage: vars.homepage.unwrap_or_default(),
                 license: vars.license.unwrap_or_default(),
                 ebuild_path,
@@ -527,24 +535,51 @@ struct MetadataText {
     text: String,
 }
 
-fn metadata_description(input: &str) -> Option<String> {
+#[derive(Debug, Default, Eq, PartialEq)]
+struct PackageMetadata {
+    description: Option<String>,
+    use_flags: Vec<UseFlagDescription>,
+}
+
+fn package_metadata(input: &str) -> PackageMetadata {
     let mut reader = Reader::from_str(input);
 
     let mut descriptions = Vec::new();
     let mut longdescriptions = Vec::new();
+    let mut use_flags = Vec::new();
 
     loop {
-        match reader.read_event().ok()? {
-            Event::Start(start) if is_element(&start, b"pkgmetadata") => {
-                read_metadata_children(&mut reader, &mut descriptions, &mut longdescriptions);
+        match reader.read_event() {
+            Ok(Event::Start(start)) if is_element(&start, b"pkgmetadata") => {
+                read_metadata_children(
+                    &mut reader,
+                    &mut descriptions,
+                    &mut longdescriptions,
+                    &mut use_flags,
+                );
                 break;
             }
-            Event::Empty(start) if is_element(&start, b"pkgmetadata") => break,
-            Event::Eof => break,
+            Ok(Event::Empty(start)) if is_element(&start, b"pkgmetadata") => break,
+            Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
 
+    PackageMetadata {
+        description: metadata_description_from_parts(descriptions, &longdescriptions),
+        use_flags,
+    }
+}
+
+#[cfg(test)]
+fn metadata_description(input: &str) -> Option<String> {
+    package_metadata(input).description
+}
+
+fn metadata_description_from_parts(
+    descriptions: Vec<MetadataText>,
+    longdescriptions: &[MetadataText],
+) -> Option<String> {
     descriptions
         .into_iter()
         .map(|item| item.text)
@@ -563,6 +598,7 @@ fn read_metadata_children(
     reader: &mut Reader<&[u8]>,
     descriptions: &mut Vec<MetadataText>,
     longdescriptions: &mut Vec<MetadataText>,
+    use_flags: &mut Vec<UseFlagDescription>,
 ) {
     let mut depth = 0usize;
     loop {
@@ -573,9 +609,36 @@ fn read_metadata_children(
             Ok(Event::Start(start)) if depth == 0 && is_element(&start, b"longdescription") => {
                 longdescriptions.push(read_metadata_text(reader, &start));
             }
+            Ok(Event::Start(start)) if depth == 0 && is_element(&start, b"use") => {
+                read_use_flags(reader, use_flags);
+            }
             Ok(Event::Start(_)) => depth += 1,
             Ok(Event::End(end)) => {
                 if depth == 0 && end.local_name().as_ref() == b"pkgmetadata" {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+}
+
+fn read_use_flags(reader: &mut Reader<&[u8]>, use_flags: &mut Vec<UseFlagDescription>) {
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) if depth == 0 && is_element(&start, b"flag") => {
+                let name = flag_name(&start);
+                let description = read_metadata_text(reader, &start).text;
+                if let Some(name) = name.filter(|_| !description.is_empty()) {
+                    use_flags.push(UseFlagDescription { name, description });
+                }
+            }
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(end)) => {
+                if depth == 0 && end.local_name().as_ref() == b"use" {
                     break;
                 }
                 depth = depth.saturating_sub(1);
@@ -663,6 +726,21 @@ fn element_lang(start: &BytesStart<'_>) -> Option<String> {
     None
 }
 
+fn flag_name(start: &BytesStart<'_>) -> Option<String> {
+    let mut attributes = start.attributes();
+    attributes.with_checks(false);
+    for attr in attributes.flatten() {
+        if attr.key.as_ref() == b"name" {
+            return attr
+                .normalized_value(XmlVersion::Implicit1_0)
+                .ok()
+                .map(|value| collapse_space(&value))
+                .filter(|value| !value.is_empty());
+        }
+    }
+    None
+}
+
 fn is_element(start: &BytesStart<'_>, name: &[u8]) -> bool {
     start.local_name().as_ref() == name
 }
@@ -733,6 +811,9 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
             xml_escape(&item.metadata_description)
         ));
     }
+    if !item.use_flags.is_empty() {
+        parts.push(format!("USE flags: {}", use_flags_html(&item.use_flags)));
+    }
     if (!item.commit_subject.is_empty() || !item.commit_body.is_empty()) && !parts.is_empty() {
         parts.push(String::new());
     }
@@ -766,6 +847,20 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
     parts.join("<br/>\n")
+}
+
+fn use_flags_html(flags: &[UseFlagDescription]) -> String {
+    flags
+        .iter()
+        .map(|flag| {
+            format!(
+                "<code>{}</code>: {}",
+                xml_escape(&flag.name),
+                xml_escape(&flag.description)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("<br/>\n")
 }
 
 fn html_text_with_breaks(input: &str) -> String {
@@ -964,12 +1059,32 @@ LICENSE="MIT"
   </maintainer>
   <description>Package &amp; summary</description>
   <longdescription lang="en">Fallback package text</longdescription>
+  <use>
+    <flag name="qt6">Use <pkg>dev-qt/qtbase</pkg> &amp; bindings</flag>
+    <flag name="webengine"><![CDATA[Enable web login]]></flag>
+  </use>
 </pkgmetadata>
 "#;
 
         assert_eq!(
             metadata_description(metadata),
             Some("Package & summary".to_string())
+        );
+        assert_eq!(
+            package_metadata(metadata),
+            PackageMetadata {
+                description: Some("Package & summary".to_string()),
+                use_flags: vec![
+                    UseFlagDescription {
+                        name: "qt6".to_string(),
+                        description: "Use dev-qt/qtbase & bindings".to_string(),
+                    },
+                    UseFlagDescription {
+                        name: "webengine".to_string(),
+                        description: "Enable web login".to_string(),
+                    },
+                ],
+            }
         );
     }
 
@@ -1087,6 +1202,10 @@ LICENSE="GPL-2"
             "dev-util/newpkg/metadata.xml",
             r#"<pkgmetadata>
   <longdescription lang="en">Metadata &amp; package details</longdescription>
+  <use>
+    <flag name="qt6">Use <pkg>dev-qt/qtbase</pkg> &amp; bindings</flag>
+    <flag name="webengine">Enable web login</flag>
+  </use>
 </pkgmetadata>
 "#,
         );
@@ -1124,9 +1243,11 @@ LICENSE="Apache-2.0"
         assert!(
             rss.contains("Metadata description: <strong>Metadata &amp; package details</strong>")
         );
-        assert!(rss.contains(
-            "Metadata description: <strong>Metadata &amp; package details</strong><br/>\n<br/>\nCommit title:"
-        ));
+        assert!(rss.contains("USE flags: <code>qt6</code>: Use dev-qt/qtbase &amp; bindings"));
+        assert!(rss.contains("<code>webengine</code>: Enable web login"));
+        assert!(
+            rss.contains("<code>webengine</code>: Enable web login<br/>\n<br/>\nCommit title:")
+        );
         assert!(rss.contains("Commit title: <a href=\"https://github.com/example/overlay/commit/"));
         assert!(rss.contains("\">dev-util/newpkg: new package</a>"));
         assert!(rss.contains(
