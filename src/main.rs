@@ -738,7 +738,8 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     }
     if !item.commit_subject.is_empty() {
         parts.push(format!(
-            "Commit title: {}",
+            "Commit title: <a href=\"{}\">{}</a>",
+            xml_escape(commit_url),
             xml_escape(&item.commit_subject)
         ));
     }
@@ -764,7 +765,6 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     if !item.license.is_empty() {
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
-    parts.push(format!("<a href=\"{}\">Commit</a>", xml_escape(commit_url)));
     parts.join("<br/>\n")
 }
 
@@ -1127,12 +1127,15 @@ LICENSE="Apache-2.0"
         assert!(rss.contains(
             "Metadata description: <strong>Metadata &amp; package details</strong><br/>\n<br/>\nCommit title:"
         ));
+        assert!(rss.contains("Commit title: <a href=\"https://github.com/example/overlay/commit/"));
+        assert!(rss.contains("\">dev-util/newpkg: new package</a>"));
         assert!(rss.contains(
             "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
         assert!(!rss.contains("Package directory"));
+        assert!(!rss.contains(">Commit</a>"));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));
