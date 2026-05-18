@@ -1,3 +1,5 @@
+use quick_xml::events::{BytesCData, BytesRef, BytesStart, BytesText, Event};
+use quick_xml::{Reader, XmlVersion};
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
@@ -66,6 +68,7 @@ struct PackageItem {
     author: String,
     date_rfc2822: String,
     description: String,
+    metadata_description: String,
     homepage: String,
     license: String,
     ebuild_path: String,
@@ -303,6 +306,8 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
             };
             let ebuild = git_output(repo, ["show", &format!("{commit}:{ebuild_path}")])?;
             let vars = EbuildVars::from_ebuild(&ebuild);
+            let metadata = git_output(repo, ["show", &format!("{commit}:{path}")])?;
+            let metadata_description = metadata_description(&metadata).unwrap_or_default();
 
             items.push(PackageItem {
                 package: package.to_string(),
@@ -311,6 +316,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 author: author.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
+                metadata_description,
                 homepage: vars.homepage.unwrap_or_default(),
                 license: vars.license.unwrap_or_default(),
                 ebuild_path,
@@ -483,6 +489,152 @@ fn collapse_space(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct MetadataText {
+    lang: Option<String>,
+    text: String,
+}
+
+fn metadata_description(input: &str) -> Option<String> {
+    let mut reader = Reader::from_str(input);
+
+    let mut descriptions = Vec::new();
+    let mut longdescriptions = Vec::new();
+
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(start) if is_element(&start, b"pkgmetadata") => {
+                read_metadata_children(&mut reader, &mut descriptions, &mut longdescriptions);
+                break;
+            }
+            Event::Empty(start) if is_element(&start, b"pkgmetadata") => break,
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    descriptions
+        .into_iter()
+        .map(|item| item.text)
+        .find(|text| !text.is_empty())
+        .or_else(|| {
+            longdescriptions
+                .iter()
+                .find(|item| item.lang.as_deref() == Some("en"))
+                .or_else(|| longdescriptions.first())
+                .map(|item| item.text.clone())
+                .filter(|text| !text.is_empty())
+        })
+}
+
+fn read_metadata_children(
+    reader: &mut Reader<&[u8]>,
+    descriptions: &mut Vec<MetadataText>,
+    longdescriptions: &mut Vec<MetadataText>,
+) {
+    let mut depth = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) if depth == 0 && is_element(&start, b"description") => {
+                descriptions.push(read_metadata_text(reader, &start));
+            }
+            Ok(Event::Start(start)) if depth == 0 && is_element(&start, b"longdescription") => {
+                longdescriptions.push(read_metadata_text(reader, &start));
+            }
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(end)) => {
+                if depth == 0 && end.local_name().as_ref() == b"pkgmetadata" {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+}
+
+fn read_metadata_text(reader: &mut Reader<&[u8]>, start: &BytesStart<'_>) -> MetadataText {
+    let end_name = start.name().as_ref().to_vec();
+    let lang = element_lang(start);
+    let mut depth = 0usize;
+    let mut text = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::Text(event)) => append_text(&mut text, &event),
+            Ok(Event::CData(event)) => append_cdata(&mut text, &event),
+            Ok(Event::GeneralRef(event)) => append_general_ref(&mut text, &event),
+            Ok(Event::End(end)) => {
+                if depth == 0 && end.name().as_ref() == end_name.as_slice() {
+                    break;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    MetadataText {
+        lang,
+        text: collapse_space(&text),
+    }
+}
+
+fn append_text(output: &mut String, event: &BytesText<'_>) {
+    if let Ok(decoded) = event.xml10_content() {
+        output.push_str(&decoded);
+    }
+}
+
+fn append_cdata(output: &mut String, event: &BytesCData<'_>) {
+    if let Ok(decoded) = event.xml10_content() {
+        output.push_str(&decoded);
+    }
+}
+
+fn append_general_ref(output: &mut String, event: &BytesRef<'_>) {
+    if let Ok(Some(ch)) = event.resolve_char_ref() {
+        output.push(ch);
+        return;
+    }
+
+    if let Ok(name) = event.xml10_content() {
+        match name.as_ref() {
+            "amp" => output.push('&'),
+            "lt" => output.push('<'),
+            "gt" => output.push('>'),
+            "quot" => output.push('"'),
+            "apos" => output.push('\''),
+            _ => {
+                output.push('&');
+                output.push_str(&name);
+                output.push(';');
+            }
+        }
+    }
+}
+
+fn element_lang(start: &BytesStart<'_>) -> Option<String> {
+    let mut attributes = start.attributes();
+    attributes.with_checks(false);
+    for attr in attributes.flatten() {
+        if matches!(attr.key.as_ref(), b"lang" | b"xml:lang") {
+            return attr
+                .normalized_value(XmlVersion::Implicit1_0)
+                .ok()
+                .map(|value| value.into_owned());
+        }
+    }
+    None
+}
+
+fn is_element(start: &BytesStart<'_>, name: &[u8]) -> bool {
+    start.local_name().as_ref() == name
+}
+
 fn render_rss(
     title: &str,
     repo_url: &str,
@@ -539,6 +691,12 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     let mut parts = Vec::new();
     if !item.description.is_empty() {
         parts.push(xml_escape(&item.description));
+    }
+    if !item.metadata_description.is_empty() && item.metadata_description != item.description {
+        parts.push(format!(
+            "Metadata description: {}",
+            xml_escape(&item.metadata_description)
+        ));
     }
     if !item.commit_subject.is_empty() {
         parts.push(format!(
@@ -747,6 +905,58 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn extracts_package_description_from_metadata_xml() {
+        let metadata = r#"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+  <maintainer type="person">
+    <email>maintainer@example.com</email>
+    <description>Maintainer nickname</description>
+  </maintainer>
+  <description>Package &amp; summary</description>
+  <longdescription lang="en">Fallback package text</longdescription>
+</pkgmetadata>
+"#;
+
+        assert_eq!(
+            metadata_description(metadata),
+            Some("Package & summary".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_maintainer_description_in_metadata_xml() {
+        let metadata = r#"
+<pkgmetadata>
+  <maintainer type="person">
+    <email>maintainer@example.com</email>
+    <description>Maintainer nickname</description>
+  </maintainer>
+</pkgmetadata>
+"#;
+
+        assert_eq!(metadata_description(metadata), None);
+    }
+
+    #[test]
+    fn prefers_english_longdescription_from_metadata_xml() {
+        let metadata = r#"
+<pkgmetadata>
+  <longdescription lang="x-test">Wrong language text</longdescription>
+  <longdescription lang="en">
+    Fast <pkg>dev-util/foo</pkg> &amp; useful <![CDATA[tool]]>
+  </longdescription>
+</pkgmetadata>
+"#;
+
+        assert_eq!(
+            metadata_description(metadata),
+            Some("Fast dev-util/foo & useful tool".to_string())
+        );
+    }
+
+    #[test]
     fn normalizes_github_ssh_urls() {
         assert_eq!(
             normalize_repo_url("git@github.com:microcai/gentoo-zh.git"),
@@ -817,7 +1027,10 @@ LICENSE="GPL-2"
 
         repo.write(
             "dev-util/newpkg/metadata.xml",
-            "<pkgmetadata></pkgmetadata>\n",
+            r#"<pkgmetadata>
+  <longdescription lang="en">Metadata &amp; package details</longdescription>
+</pkgmetadata>
+"#,
         );
         repo.write(
             "dev-util/newpkg/newpkg-1.ebuild",
@@ -846,6 +1059,7 @@ LICENSE="Apache-2.0"
         assert!(rss.contains("<title>test-overlay: new Gentoo packages</title>"));
         assert!(rss.contains("dev-util/newpkg: new package"));
         assert!(rss.contains("Useful &amp; fast"));
+        assert!(rss.contains("Metadata description: Metadata &amp; package details"));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));

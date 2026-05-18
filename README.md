@@ -65,15 +65,15 @@ cargo test
 cargo run -- --repo /path/to/overlay --output /tmp/feed.rss
 ```
 
-The binary has no Rust crate dependencies. It requires `git` at runtime.
+The binary includes its Rust dependencies at build time. It requires `git` at runtime.
 
 ## Releases
 
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
 The release workflow uploads:
