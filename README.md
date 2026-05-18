@@ -4,6 +4,9 @@ Generate an RSS feed from a Gentoo overlay git repository. The feed contains
 packages whose `category/package/metadata.xml` file was added in git history.
 Deleted packages and ebuild version updates are ignored.
 
+For each package item, the feed includes `DIST` file sizes from the package
+`Manifest` when it exists.
+
 The tool regenerates the whole RSS file on every run. It never appends to an
 existing file, so repeated runs are deterministic and do not create duplicate
 items.

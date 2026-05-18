@@ -77,12 +77,19 @@ struct PackageItem {
     license: String,
     ebuild_path: String,
     patches: Vec<String>,
+    distfiles: Vec<ManifestDistfile>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct UseFlagDescription {
     name: String,
     description: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ManifestDistfile {
+    name: String,
+    size_bytes: u64,
 }
 
 fn main() -> ExitCode {
@@ -319,6 +326,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
             let vars = EbuildVars::from_ebuild(&ebuild);
             let metadata = git_output(repo, ["show", &format!("{commit}:{path}")])?;
             let package_metadata = package_metadata(&metadata);
+            let distfiles = package_manifest_distfiles(repo, commit, package)?;
             let patches = if config.list_patches {
                 package_patch_names(repo, commit, package)?
             } else {
@@ -340,6 +348,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 license: vars.license.unwrap_or_default(),
                 ebuild_path,
                 patches,
+                distfiles,
             });
         }
     }
@@ -420,6 +429,40 @@ fn select_ebuild(repo: &Path, commit: &str, package: &str) -> Result<Option<Stri
         .find(|path| !path.ends_with("-9999.ebuild"))
         .or_else(|| ebuilds.last())
         .cloned())
+}
+
+fn package_manifest_distfiles(
+    repo: &Path,
+    commit: &str,
+    package: &str,
+) -> Result<Vec<ManifestDistfile>> {
+    let manifest_path = format!("{package}/Manifest");
+    let tree = git_output(
+        repo,
+        ["ls-tree", "--name-only", commit, "--", &manifest_path],
+    )?;
+    if !tree.lines().any(|path| path == manifest_path) {
+        return Ok(Vec::new());
+    }
+
+    let manifest = git_output(repo, ["show", &format!("{commit}:{manifest_path}")])?;
+    Ok(manifest_distfiles(&manifest))
+}
+
+fn manifest_distfiles(input: &str) -> Vec<ManifestDistfile> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next()? == "DIST").then_some(())?;
+            let name = fields.next()?;
+            let size_bytes = fields.next()?.parse().ok()?;
+            Some(ManifestDistfile {
+                name: name.to_string(),
+                size_bytes,
+            })
+        })
+        .collect()
 }
 
 fn package_patch_names(repo: &Path, commit: &str, package: &str) -> Result<Vec<String>> {
@@ -920,6 +963,10 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
         xml_escape(&item.package)
     ));
     parts.push(format!("Ebuild: {}", xml_escape(&item.ebuild_path)));
+    if !item.distfiles.is_empty() {
+        parts.push("Distfiles:".to_string());
+        parts.extend(item.distfiles.iter().map(distfile_html));
+    }
     if !item.patches.is_empty() {
         parts.push(format!("Patches: {}", patch_names_html(&item.patches)));
     }
@@ -942,6 +989,27 @@ fn patch_names_html(patches: &[String]) -> String {
         .map(|patch| format!("<code>{}</code>", xml_escape(patch)))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn distfile_html(distfile: &ManifestDistfile) -> String {
+    format!(
+        "<code>{}</code>: {}",
+        xml_escape(&distfile.name),
+        human_size(distfile.size_bytes)
+    )
+}
+
+fn human_size(size_bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+
+    match size_bytes {
+        0..=1023 => format!("{size_bytes} B"),
+        1024..=1_048_575 => format!("{:.1} KB", size_bytes as f64 / KB),
+        1_048_576..=1_073_741_823 => format!("{:.1} MB", size_bytes as f64 / MB),
+        _ => format!("{:.2} GB", size_bytes as f64 / GB),
+    }
 }
 
 fn use_flag_html(flag: &UseFlagDescription) -> String {
@@ -1260,6 +1328,36 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn extracts_distfiles_from_manifest() {
+        let distfiles = manifest_distfiles(
+            r#"
+DIST newpkg-1.tar.gz 1536 BLAKE2B abc SHA512 def
+DIST large-source.tar.xz 2097152 BLAKE2B abc SHA512 def
+EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
+DIST broken-size not-a-number BLAKE2B abc SHA512 def
+"#,
+        );
+
+        assert_eq!(
+            distfiles,
+            vec![
+                ManifestDistfile {
+                    name: "newpkg-1.tar.gz".to_string(),
+                    size_bytes: 1536,
+                },
+                ManifestDistfile {
+                    name: "large-source.tar.xz".to_string(),
+                    size_bytes: 2_097_152,
+                },
+            ]
+        );
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(2_097_152), "2.0 MB");
+        assert_eq!(human_size(1_316_010_876), "1.23 GB");
+    }
+
+    #[test]
     fn generates_only_new_packages() {
         let repo = TestRepo::new("new-packages");
         repo.init();
@@ -1325,6 +1423,14 @@ HOMEPAGE="https://new.example/path?x=1&y=2"
 LICENSE="Apache-2.0"
 "#,
         );
+        repo.write(
+            "dev-util/newpkg/Manifest",
+            r#"
+DIST newpkg-1.tar.gz 1536 BLAKE2B abc SHA512 def
+DIST large-source.tar.xz 2097152 BLAKE2B abc SHA512 def
+EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
+"#,
+        );
         repo.write("dev-util/newpkg/files/fix-build.patch", "patch content\n");
         repo.write(
             "dev-util/newpkg/files/subdir/fix-runtime.diff",
@@ -1374,6 +1480,9 @@ LICENSE="Apache-2.0"
         assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">test-user</a>"));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
+        assert!(rss.contains(
+            "Distfiles:<br/>\n<code>newpkg-1.tar.gz</code>: 1.5 KB<br/>\n<code>large-source.tar.xz</code>: 2.0 MB"
+        ));
         assert!(!rss.contains("Patches:"));
         assert!(!rss.contains("Package directory"));
         assert!(!rss.contains(">Commit</a>"));
