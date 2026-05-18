@@ -48,6 +48,11 @@ gentoo-overlay-new-packages-to-rss \
 Add `--list-patches` to include patch filenames from each package's `files/`
 directory when `.patch` or `.diff` files exist.
 
+Add `--github-author-links` to use the GitHub commit API for author links when
+the git author email is not a GitHub noreply address. Set `GITHUB_TOKEN` or
+`GH_TOKEN` to avoid GitHub's low anonymous API rate limit. This optional mode
+requires `curl` at runtime.
+
 Use `--include-root` only if the repository root commit should be treated as a
 source of new package events. Most overlays should leave it disabled.
 
@@ -90,8 +95,8 @@ The binary includes its Rust dependencies at build time. It requires `git` at ru
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.12
-git push origin v0.1.12
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 The release workflow uploads:

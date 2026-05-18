@@ -1,6 +1,6 @@
 use quick_xml::events::{BytesCData, BytesRef, BytesStart, BytesText, Event};
 use quick_xml::{Reader, XmlVersion};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
@@ -59,6 +59,7 @@ struct Config {
     max_items: Option<usize>,
     include_root: bool,
     list_patches: bool,
+    github_author_links: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -68,6 +69,8 @@ struct PackageItem {
     commit_subject: String,
     commit_body: String,
     author: String,
+    author_email: String,
+    author_name: String,
     author_github_username: String,
     date_rfc2822: String,
     description: String,
@@ -127,6 +130,7 @@ impl Config {
             max_items: None,
             include_root: false,
             list_patches: false,
+            github_author_links: false,
         };
 
         let mut args = args.into_iter().map(Into::into).peekable();
@@ -156,6 +160,7 @@ impl Config {
                 }
                 "--include-root" => config.include_root = true,
                 "--list-patches" => config.list_patches = true,
+                "--github-author-links" => config.github_author_links = true,
                 unknown => return Err(Error::Args(format!("unknown argument: {unknown}"))),
             }
         }
@@ -191,6 +196,7 @@ Options:
   --max-items N          Keep only the newest N items
   --include-root         Include package metadata added by the root commit
   --list-patches         Include package files/*.patch and files/*.diff names
+  --github-author-links  Use GitHub API to link non-noreply author emails
   -h, --help             Show this help
 "
     );
@@ -220,6 +226,7 @@ fn generate(config: Config) -> Result<PathBuf> {
     if let Some(max_items) = config.max_items {
         items.truncate(max_items);
     }
+    enrich_github_author_links(&mut items, config.github_author_links, &repo_url);
 
     let channel_title = config
         .title
@@ -339,6 +346,8 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 commit_subject: subject.to_string(),
                 commit_body: commit_body.clone(),
                 author: author.clone(),
+                author_email: author_email.to_string(),
+                author_name: author_name.trim().to_string(),
                 author_github_username: author_github_username.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
@@ -354,6 +363,17 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
     }
 
     Ok(items)
+}
+
+fn enrich_github_author_links(items: &mut [PackageItem], enabled: bool, repo_url: &str) {
+    let mut author_resolver = GitHubAuthorResolver::new(enabled, repo_url);
+    for item in items {
+        if item.author_github_username.is_empty()
+            && let Some(username) = author_resolver.username(&item.commit, &item.author_email)
+        {
+            item.author_github_username = username;
+        }
+    }
 }
 
 fn commit_body_and_added_paths(input: &str) -> (String, Vec<&str>) {
@@ -546,6 +566,97 @@ fn rss_author(email: &str, name: &str) -> Option<String> {
     })
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct GitHubRepo {
+    owner: String,
+    name: String,
+}
+
+struct GitHubAuthorResolver {
+    enabled: bool,
+    repo: Option<GitHubRepo>,
+    token: Option<String>,
+    cache: HashMap<String, String>,
+}
+
+impl GitHubAuthorResolver {
+    fn new(enabled: bool, repo_url: &str) -> Self {
+        GitHubAuthorResolver {
+            enabled,
+            repo: enabled.then(|| github_repo_from_url(repo_url)).flatten(),
+            token: env::var("GITHUB_TOKEN")
+                .or_else(|_| env::var("GH_TOKEN"))
+                .ok()
+                .filter(|token| !token.trim().is_empty()),
+            cache: HashMap::new(),
+        }
+    }
+
+    fn username(&mut self, commit: &str, email: &str) -> Option<String> {
+        if let Some(username) = github_username_from_noreply_email(email) {
+            return Some(username);
+        }
+        if !self.enabled || self.repo.is_none() {
+            return None;
+        }
+
+        let cache_key = email.trim().to_ascii_lowercase();
+        if !cache_key.is_empty()
+            && let Some(username) = self.cache.get(&cache_key)
+        {
+            return Some(username.clone());
+        }
+
+        let username = self.fetch_commit_author_login(commit);
+        if !cache_key.is_empty()
+            && let Some(username) = &username
+        {
+            self.cache.insert(cache_key, username.clone());
+        }
+        username
+    }
+
+    fn fetch_commit_author_login(&self, commit: &str) -> Option<String> {
+        let repo = self.repo.as_ref()?;
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/commits/{}",
+            repo.owner, repo.name, commit
+        );
+        let mut command = Command::new("curl");
+        command
+            .arg("-fsSL")
+            .arg("-H")
+            .arg("Accept: application/vnd.github+json")
+            .arg("-H")
+            .arg("X-GitHub-Api-Version: 2022-11-28");
+        if let Some(token) = &self.token {
+            command
+                .arg("-H")
+                .arg(format!("Authorization: Bearer {token}"));
+        }
+        let output = command.arg(url).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let json = String::from_utf8(output.stdout).ok()?;
+        github_author_login_from_commit_json(&json)
+    }
+}
+
+fn github_repo_from_url(url: &str) -> Option<GitHubRepo> {
+    let normalized = normalize_repo_url(url);
+    let path = normalized
+        .strip_prefix("https://github.com/")?
+        .trim_end_matches('/');
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let name = parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(GitHubRepo { owner, name })
+}
+
 fn github_username_from_noreply_email(email: &str) -> Option<String> {
     let (local, domain) = email.trim().split_once('@')?;
     if !domain.eq_ignore_ascii_case("users.noreply.github.com") {
@@ -568,6 +679,175 @@ fn is_valid_github_username(username: &str) -> bool {
     bytes
         .iter()
         .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
+
+fn github_author_login_from_commit_json(input: &str) -> Option<String> {
+    let author = json_top_level_object_field(input, "author")?;
+    let login = json_string_field(author, "login")?;
+    is_valid_github_username(&login).then_some(login)
+}
+
+fn json_top_level_object_field<'a>(input: &'a str, field: &str) -> Option<&'a str> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'"' if depth == 1 => {
+                let (key, next) = json_string_at(input, index)?;
+                let colon = skip_json_whitespace(bytes, next);
+                if bytes.get(colon) == Some(&b':') && key == field {
+                    let value = skip_json_whitespace(bytes, colon + 1);
+                    if bytes.get(value) == Some(&b'{') {
+                        return json_object_at(input, value);
+                    }
+                }
+                index = next;
+                continue;
+            }
+            b'"' => in_string = true,
+            _ => {}
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn json_string_field(input: &str, field: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'"' if depth == 1 => {
+                let (key, next) = json_string_at(input, index)?;
+                let colon = skip_json_whitespace(bytes, next);
+                if bytes.get(colon) == Some(&b':') && key == field {
+                    let value = skip_json_whitespace(bytes, colon + 1);
+                    if bytes.get(value) == Some(&b'"') {
+                        return json_string_at(input, value).map(|(value, _)| value);
+                    }
+                }
+                index = next;
+                continue;
+            }
+            b'"' => in_string = true,
+            _ => {}
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn json_object_at(input: &str, start: usize) -> Option<&str> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut index = start;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return input.get(start..=index);
+                }
+            }
+            b'"' => in_string = true,
+            _ => {}
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn json_string_at(input: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = input.as_bytes();
+    (bytes.get(start) == Some(&b'"')).then_some(())?;
+    let mut value = String::new();
+    let mut escaped = false;
+    let mut index = start + 1;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            value.push(byte as char);
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            return Some((value, index + 1));
+        } else {
+            value.push(byte as char);
+        }
+        index += 1;
+    }
+
+    None
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while bytes
+        .get(index)
+        .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+    {
+        index += 1;
+    }
+    index
 }
 
 fn is_valid_email(value: &str) -> bool {
@@ -951,10 +1231,15 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     }
     if !item.author_github_username.is_empty() {
         let profile_url = format!("https://github.com/{}", item.author_github_username);
+        let author_label = if item.author_name.is_empty() {
+            item.author_github_username.as_str()
+        } else {
+            item.author_name.as_str()
+        };
         parts.push(format!(
             "Author: <a href=\"{}\">{}</a>",
             xml_escape(&profile_url),
-            xml_escape(&item.author_github_username)
+            xml_escape(author_label)
         ));
     }
     parts.push(format!(
@@ -1225,6 +1510,42 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn extracts_github_commit_author_login() {
+        let json = r#"{
+  "commit": {
+    "author": {
+      "name": "Leo Douglas",
+      "email": "douglarek@gmail.com"
+    }
+  },
+  "author": {
+    "login": "douglarek",
+    "html_url": "https://github.com/douglarek"
+  },
+  "committer": {
+    "login": "peeweep"
+  }
+}"#;
+
+        assert_eq!(
+            github_author_login_from_commit_json(json),
+            Some("douglarek".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_github_repo_from_url() {
+        assert_eq!(
+            github_repo_from_url("git@github.com:microcai/gentoo-zh.git"),
+            Some(GitHubRepo {
+                owner: "microcai".to_string(),
+                name: "gentoo-zh".to_string(),
+            })
+        );
+        assert_eq!(github_repo_from_url("https://gitlab.com/a/b"), None);
+    }
+
+    #[test]
     fn extracts_package_description_from_metadata_xml() {
         let metadata = r#"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1454,6 +1775,7 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
             max_items: None,
             include_root: false,
             list_patches: false,
+            github_author_links: false,
         })
         .expect("RSS generated");
 
@@ -1477,7 +1799,7 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
         assert!(rss.contains(
             "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
-        assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">test-user</a>"));
+        assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">Test User</a>"));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
         assert!(rss.contains(
@@ -1502,6 +1824,7 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
             max_items: None,
             include_root: false,
             list_patches: true,
+            github_author_links: false,
         })
         .expect("RSS generated with patch names");
         let rss = fs::read_to_string(output).expect("RSS can be read");
