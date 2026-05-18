@@ -1224,7 +1224,8 @@ fn item_description(
         parts.push("USE flags:".to_string());
         parts.extend(item.use_flags.iter().map(use_flag_html));
     }
-    if (!item.commit_subject.is_empty() || !item.commit_body.is_empty()) && !parts.is_empty() {
+    let commit_body = visible_commit_body(item);
+    if (!item.commit_subject.is_empty() || commit_body.is_some()) && !parts.is_empty() {
         parts.push(String::new());
     }
     if !item.commit_subject.is_empty() {
@@ -1234,10 +1235,10 @@ fn item_description(
             xml_escape(&item.commit_subject)
         ));
     }
-    if !item.commit_body.is_empty() {
+    if let Some(commit_body) = commit_body {
         parts.push(format!(
             "Commit body: {}",
-            html_text_with_breaks(&item.commit_body)
+            html_text_with_breaks(commit_body)
         ));
     }
     if let Some(author) = author_html(item, show_author_email) {
@@ -1267,6 +1268,49 @@ fn item_description(
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
     parts.join("<br/>\n")
+}
+
+fn visible_commit_body(item: &PackageItem) -> Option<&str> {
+    if item.commit_body.is_empty()
+        || is_redundant_signed_off_by_body(&item.commit_body, &item.author_name, &item.author_email)
+    {
+        None
+    } else {
+        Some(&item.commit_body)
+    }
+}
+
+fn is_redundant_signed_off_by_body(body: &str, author_name: &str, author_email: &str) -> bool {
+    if author_name.trim().is_empty() || author_email.trim().is_empty() {
+        return false;
+    }
+
+    let mut lines = body.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(line) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_some() {
+        return false;
+    }
+
+    let Some((prefix, signed)) = line.split_once(':') else {
+        return false;
+    };
+    if !prefix.trim().eq_ignore_ascii_case("Signed-off-by") {
+        return false;
+    }
+
+    let Some((signed_name, signed_email)) = signed.trim().rsplit_once('<') else {
+        return false;
+    };
+    let Some(signed_email) = signed_email.trim().strip_suffix('>') else {
+        return false;
+    };
+
+    signed_name.trim() == author_name.trim()
+        && signed_email
+            .trim()
+            .eq_ignore_ascii_case(author_email.trim())
 }
 
 fn author_html(item: &PackageItem, show_author_email: bool) -> Option<String> {
@@ -1679,6 +1723,35 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn detects_redundant_signed_off_by_body() {
+        assert!(is_redundant_signed_off_by_body(
+            "Signed-off-by: Leo Douglas <douglarek@gmail.com>",
+            "Leo Douglas",
+            "douglarek@gmail.com"
+        ));
+        assert!(is_redundant_signed_off_by_body(
+            "\nSigned-off-by: Leo Douglas <DOUGLAREK@gmail.com>\n",
+            "Leo Douglas",
+            "douglarek@gmail.com"
+        ));
+        assert!(!is_redundant_signed_off_by_body(
+            "Useful detail\n\nSigned-off-by: Leo Douglas <douglarek@gmail.com>",
+            "Leo Douglas",
+            "douglarek@gmail.com"
+        ));
+        assert!(!is_redundant_signed_off_by_body(
+            "Signed-off-by: Another Person <douglarek@gmail.com>",
+            "Leo Douglas",
+            "douglarek@gmail.com"
+        ));
+        assert!(!is_redundant_signed_off_by_body(
+            "Signed-off-by: Leo Douglas <douglarek@gmail.com>\nSigned-off-by: jinqiang zhang <jinqiang@zhang.my>",
+            "Leo Douglas",
+            "douglarek@gmail.com"
+        ));
+    }
+
+    #[test]
     fn extracts_distfiles_from_manifest() {
         let distfiles = manifest_distfiles(
             r#"
@@ -1751,8 +1824,9 @@ LICENSE="GPL-2"
             "app-existing/existing/metadata.xml",
             "<pkgmetadata></pkgmetadata>\n",
         );
-        repo.commit(
+        repo.commit_with_body(
             "app-existing/existing: add metadata",
+            "Signed-off-by: Test User <123456+test-user@users.noreply.github.com>",
             "2024-01-04T00:00:00Z",
         );
 
@@ -1842,6 +1916,7 @@ EBUILD newpkg-1.ebuild 123 BLAKE2B abc SHA512 def
         assert!(!rss.contains("Package directory"));
         assert!(!rss.contains(">Commit</a>"));
         assert!(rss.contains("app-existing/existing: add metadata"));
+        assert!(!rss.contains("Commit body: Signed-off-by: Test User"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));
         assert!(!rss.contains("app-root/rootpkg: add 2"));
