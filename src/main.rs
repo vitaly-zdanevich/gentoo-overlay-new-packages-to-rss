@@ -67,6 +67,7 @@ struct PackageItem {
     commit_subject: String,
     commit_body: String,
     author: String,
+    author_github_username: String,
     date_rfc2822: String,
     description: String,
     metadata_description: String,
@@ -289,6 +290,8 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
         let subject = header_fields.next().unwrap_or_default();
         let body_and_paths = header_fields.next().unwrap_or_default();
         let author = rss_author(author_email, author_name).unwrap_or_default();
+        let author_github_username =
+            github_username_from_noreply_email(author_email).unwrap_or_default();
         let (commit_body, added_paths) = commit_body_and_added_paths(body_and_paths);
 
         let has_parent = parents.split_whitespace().next().is_some();
@@ -318,6 +321,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 commit_subject: subject.to_string(),
                 commit_body: commit_body.clone(),
                 author: author.clone(),
+                author_github_username: author_github_username.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
                 metadata_description: package_metadata.description.unwrap_or_default(),
@@ -450,6 +454,30 @@ fn rss_author(email: &str, name: &str) -> Option<String> {
             format!("{email} ({})", name.trim())
         }
     })
+}
+
+fn github_username_from_noreply_email(email: &str) -> Option<String> {
+    let (local, domain) = email.trim().split_once('@')?;
+    if !domain.eq_ignore_ascii_case("users.noreply.github.com") {
+        return None;
+    }
+
+    let username = local
+        .split_once('+')
+        .map_or(local, |(_, username)| username);
+    is_valid_github_username(username).then(|| username.to_string())
+}
+
+fn is_valid_github_username(username: &str) -> bool {
+    let bytes = username.as_bytes();
+    if bytes.is_empty() || bytes.len() > 39 || username.starts_with('-') || username.ends_with('-')
+    {
+        return false;
+    }
+
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
 }
 
 fn is_valid_email(value: &str) -> bool {
@@ -830,6 +858,14 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
             html_text_with_breaks(&item.commit_body)
         ));
     }
+    if !item.author_github_username.is_empty() {
+        let profile_url = format!("https://github.com/{}", item.author_github_username);
+        parts.push(format!(
+            "Author: <a href=\"{}\">{}</a>",
+            xml_escape(&profile_url),
+            xml_escape(&item.author_github_username)
+        ));
+    }
     parts.push(format!(
         "Package: <a href=\"{}\">{}</a>",
         xml_escape(package_url),
@@ -1048,6 +1084,26 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn extracts_github_username_from_noreply_email() {
+        assert_eq!(
+            github_username_from_noreply_email("123456+vitaly-zdanevich@users.noreply.github.com"),
+            Some("vitaly-zdanevich".to_string())
+        );
+        assert_eq!(
+            github_username_from_noreply_email("vitaly-zdanevich@users.noreply.github.com"),
+            Some("vitaly-zdanevich".to_string())
+        );
+        assert_eq!(
+            github_username_from_noreply_email("zdanevich.vitaly@ya.ru"),
+            None
+        );
+        assert_eq!(
+            github_username_from_noreply_email("-invalid@users.noreply.github.com"),
+            None
+        );
+    }
+
+    #[test]
     fn extracts_package_description_from_metadata_xml() {
         let metadata = r#"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1253,6 +1309,7 @@ LICENSE="Apache-2.0"
         assert!(rss.contains(
             "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
+        assert!(rss.contains("Author: <a href=\"https://github.com/test-user\">test-user</a>"));
         assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
         assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
         assert!(!rss.contains("Package directory"));
@@ -1313,7 +1370,7 @@ LICENSE="Apache-2.0"
                 .arg("-c")
                 .arg("user.name=Test User")
                 .arg("-c")
-                .arg("user.email=test@example.com");
+                .arg("user.email=123456+test-user@users.noreply.github.com");
             command.args(args);
             if let Some(date) = date {
                 command
