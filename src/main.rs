@@ -65,6 +65,7 @@ struct PackageItem {
     package: String,
     commit: String,
     commit_subject: String,
+    commit_body: String,
     author: String,
     date_rfc2822: String,
     description: String,
@@ -251,7 +252,7 @@ fn discover_repo_url(repo: &Path) -> Result<String> {
 
 fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
     let format = format!(
-        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%ae{UNIT_SEPARATOR}%an{UNIT_SEPARATOR}%s"
+        "--format=format:{RECORD_SEPARATOR}%H{UNIT_SEPARATOR}%P{UNIT_SEPARATOR}%aD{UNIT_SEPARATOR}%ae{UNIT_SEPARATOR}%an{UNIT_SEPARATOR}%s{UNIT_SEPARATOR}%b"
     );
     let log = git_output(
         repo,
@@ -272,18 +273,16 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
         .split(RECORD_SEPARATOR)
         .filter(|record| !record.trim().is_empty())
     {
-        let mut lines = record.lines();
-        let Some(header) = lines.next() else {
-            continue;
-        };
-        let mut header_fields = header.split(UNIT_SEPARATOR);
+        let mut header_fields = record.splitn(7, UNIT_SEPARATOR);
         let commit = header_fields.next().unwrap_or_default();
         let parents = header_fields.next().unwrap_or_default();
         let date_rfc2822 = header_fields.next().unwrap_or_default();
         let author_email = header_fields.next().unwrap_or_default();
         let author_name = header_fields.next().unwrap_or_default();
         let subject = header_fields.next().unwrap_or_default();
+        let body_and_paths = header_fields.next().unwrap_or_default();
         let author = rss_author(author_email, author_name).unwrap_or_default();
+        let (commit_body, added_paths) = commit_body_and_added_paths(body_and_paths);
 
         let has_parent = parents.split_whitespace().next().is_some();
         if !has_parent && !config.include_root {
@@ -291,10 +290,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
         }
 
         seen_in_commit.clear();
-        for line in lines {
-            let Some(path) = added_path_from_name_status(line) else {
-                continue;
-            };
+        for path in added_paths {
             let Some(package) = package_from_metadata_path(path) else {
                 continue;
             };
@@ -313,6 +309,7 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
                 package: package.to_string(),
                 commit: commit.to_string(),
                 commit_subject: subject.to_string(),
+                commit_body: commit_body.clone(),
                 author: author.clone(),
                 date_rfc2822: date_rfc2822.to_string(),
                 description: vars.description.unwrap_or_default(),
@@ -325,6 +322,41 @@ fn new_package_items(repo: &Path, config: &Config) -> Result<Vec<PackageItem>> {
     }
 
     Ok(items)
+}
+
+fn commit_body_and_added_paths(input: &str) -> (String, Vec<&str>) {
+    let mut body_lines = Vec::new();
+    let mut added_paths = Vec::new();
+
+    for line in input.lines() {
+        if let Some(path) = added_path_from_name_status(line)
+            .filter(|path| package_from_metadata_path(path).is_some())
+        {
+            added_paths.push(path);
+        } else {
+            body_lines.push(line);
+        }
+    }
+
+    (trim_body_lines(&body_lines), added_paths)
+}
+
+fn trim_body_lines(lines: &[&str]) -> String {
+    let mut start = 0;
+    let mut end = lines.len();
+
+    while start < end && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    lines[start..end]
+        .iter()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn added_path_from_name_status(line: &str) -> Option<&str> {
@@ -701,13 +733,19 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
             xml_escape(&item.metadata_description)
         ));
     }
+    if (!item.commit_subject.is_empty() || !item.commit_body.is_empty()) && !parts.is_empty() {
+        parts.push(String::new());
+    }
     if !item.commit_subject.is_empty() {
-        if !parts.is_empty() {
-            parts.push(String::new());
-        }
         parts.push(format!(
             "Commit title: {}",
             xml_escape(&item.commit_subject)
+        ));
+    }
+    if !item.commit_body.is_empty() {
+        parts.push(format!(
+            "Commit body: {}",
+            html_text_with_breaks(&item.commit_body)
         ));
     }
     parts.push(format!("Package: {}", xml_escape(&item.package)));
@@ -728,6 +766,10 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     ));
     parts.push(format!("<a href=\"{}\">Commit</a>", xml_escape(commit_url)));
     parts.join("<br/>\n")
+}
+
+fn html_text_with_breaks(input: &str) -> String {
+    xml_escape(input).replace('\n', "<br/>\n")
 }
 
 fn push_tag(rss: &mut String, indent: usize, tag: &str, value: &str) {
@@ -984,6 +1026,16 @@ LICENSE="MIT"
     }
 
     #[test]
+    fn separates_commit_body_from_added_paths() {
+        let (body, paths) = commit_body_and_added_paths(
+            "Useful <details> & context\n\nSecond paragraph\n\nA\tdev-util/newpkg/metadata.xml",
+        );
+
+        assert_eq!(body, "Useful <details> & context\n\nSecond paragraph");
+        assert_eq!(paths, vec!["dev-util/newpkg/metadata.xml"]);
+    }
+
+    #[test]
     fn generates_only_new_packages() {
         let repo = TestRepo::new("new-packages");
         repo.init();
@@ -1045,7 +1097,11 @@ HOMEPAGE="https://new.example/path?x=1&y=2"
 LICENSE="Apache-2.0"
 "#,
         );
-        repo.commit("dev-util/newpkg: new package", "2024-01-05T00:00:00Z");
+        repo.commit_with_body(
+            "dev-util/newpkg: new package",
+            "Useful <details> & context\n\nSecond paragraph",
+            "2024-01-05T00:00:00Z",
+        );
 
         let output = repo.path.join("public/feed.rss");
         let generated = generate(Config {
@@ -1070,6 +1126,9 @@ LICENSE="Apache-2.0"
         );
         assert!(rss.contains(
             "Metadata description: <strong>Metadata &amp; package details</strong><br/>\n<br/>\nCommit title:"
+        ));
+        assert!(rss.contains(
+            "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
@@ -1104,8 +1163,16 @@ LICENSE="Apache-2.0"
         }
 
         fn commit(&self, message: &str, date: &str) {
+            self.commit_with_body(message, "", date);
+        }
+
+        fn commit_with_body(&self, message: &str, body: &str, date: &str) {
             self.git(["add", "."], None);
-            self.git(["commit", "-m", message], Some(date));
+            let mut args = vec!["commit", "-m", message];
+            if !body.is_empty() {
+                args.extend(["-m", body]);
+            }
+            self.git(args, Some(date));
         }
 
         fn git<I, S>(&self, args: I, date: Option<&str>)

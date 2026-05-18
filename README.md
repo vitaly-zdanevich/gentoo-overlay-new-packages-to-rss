@@ -84,8 +84,8 @@ The binary includes its Rust dependencies at build time. It requires `git` at ru
 Push a version tag to publish the Linux binary:
 
 ```sh
-git tag v0.1.11
-git push origin v0.1.11
+git tag v0.1.12
+git push origin v0.1.12
 ```
 
 The release workflow uploads:

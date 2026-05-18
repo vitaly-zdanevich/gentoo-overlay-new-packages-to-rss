@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GENERATOR_VERSION: v0.1.11
+  GENERATOR_VERSION: v0.1.12
   GENERATOR_BINARY: gentoo-overlay-new-packages-to-rss-linux-x86_64
 
 jobs:
