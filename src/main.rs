@@ -748,7 +748,11 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
             html_text_with_breaks(&item.commit_body)
         ));
     }
-    parts.push(format!("Package: {}", xml_escape(&item.package)));
+    parts.push(format!(
+        "Package: <a href=\"{}\">{}</a>",
+        xml_escape(package_url),
+        xml_escape(&item.package)
+    ));
     parts.push(format!("Ebuild: {}", xml_escape(&item.ebuild_path)));
     if !item.homepage.is_empty() {
         parts.push(format!(
@@ -760,10 +764,6 @@ fn item_description(item: &PackageItem, package_url: &str, commit_url: &str) -> 
     if !item.license.is_empty() {
         parts.push(format!("License: {}", xml_escape(&item.license)));
     }
-    parts.push(format!(
-        "<a href=\"{}\">Package directory</a>",
-        xml_escape(package_url)
-    ));
     parts.push(format!("<a href=\"{}\">Commit</a>", xml_escape(commit_url)));
     parts.join("<br/>\n")
 }
@@ -1130,6 +1130,9 @@ LICENSE="Apache-2.0"
         assert!(rss.contains(
             "Commit body: Useful &lt;details&gt; &amp; context<br/>\n<br/>\nSecond paragraph"
         ));
+        assert!(rss.contains("Package: <a href=\"https://github.com/example/overlay/tree/"));
+        assert!(rss.contains("/dev-util/newpkg\">dev-util/newpkg</a>"));
+        assert!(!rss.contains("Package directory"));
         assert!(rss.contains("app-existing/existing: add metadata"));
         assert!(rss.contains("https://github.com/example/overlay/commit/"));
         assert!(!rss.contains("initial import"));
